@@ -3,21 +3,21 @@ from langgraph.graph import StateGraph, END
 from state import GSTGraphState
 from agents.reconciler import watcher_agent, reconciliation_agent
 import json
-
+from agents.vendor_chase import vendor_chase_agent
 # 1. Initialize the StateGraph with our Pydantic state schema
 workflow = StateGraph(GSTGraphState)
 
 # 2. Add our agent nodes to the graph
 workflow.add_node("watcher", watcher_agent)
 workflow.add_node("reconciler", reconciliation_agent)
-
+workflow.add_node("vendor_chase", vendor_chase_agent)
 # 3. Define the Flow (Edges)
 # This tells LangGraph exactly what order to run the agents in.
 workflow.set_entry_point("watcher")
 workflow.add_edge("watcher", "reconciler")
 # For now, it ends after reconciliation. We will add the Vendor Chase agent here later.
-workflow.add_edge("reconciler", END) 
-
+workflow.add_edge("reconciler", "vendor_chase")
+workflow.add_edge("vendor_chase", END)
 # 4. Compile the application
 gst_app = workflow.compile()
 
