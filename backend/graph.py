@@ -1,33 +1,37 @@
 # backend/graph.py
+import os
+import json
+import uuid  # <-- Added to generate unique run IDs
+from pymongo import MongoClient
+from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import StateGraph, END
 from state import GSTGraphState
 from agents.reconciler import watcher_agent, reconciliation_agent
-import json
 from agents.vendor_chase import vendor_chase_agent
-# 1. Initialize the StateGraph with our Pydantic state schema
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# 1. Initialize the StateGraph
 workflow = StateGraph(GSTGraphState)
 
-# 2. Add our agent nodes to the graph
+# 2. Add our agent nodes
 workflow.add_node("watcher", watcher_agent)
 workflow.add_node("reconciler", reconciliation_agent)
 workflow.add_node("vendor_chase", vendor_chase_agent)
-# 3. Define the Flow (Edges)
-# This tells LangGraph exactly what order to run the agents in.
+
+# 3. Define the Flow
 workflow.set_entry_point("watcher")
 workflow.add_edge("watcher", "reconciler")
-# For now, it ends after reconciliation. We will add the Vendor Chase agent here later.
 workflow.add_edge("reconciler", "vendor_chase")
 workflow.add_edge("vendor_chase", END)
-# 4. Compile the application
-gst_app = workflow.compile()
 
 # ---------------------------------------------------------
 # LOCAL TEST RUNNER
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    print("🚀 Initializing Zero-Touch GST LangGraph Orchestrator...\n")
+    print("🚀 Initializing MongoDB Checkpointed LangGraph...\n")
     
-    # We define our internal company books to feed into the graph
     initial_state = {
         "current_period": "2026-03",
         "days_to_cutoff": 250,
@@ -46,12 +50,29 @@ if __name__ == "__main__":
         "workflow_status": "started"
     }
 
-    # Execute the Graph autonomously!
-    final_state = gst_app.invoke(initial_state)
+    # --- 4. THE MONGODB CHECKPOINTER ---
+    # Ensure MONGODB_URI is in your .env file from earlier!
+    mongo_uri = os.getenv("MONGO_URI")
+    mongo_client = MongoClient(mongo_uri)
+    
+    # This automatically creates a 'zero_touch_gst' database and manages state
+    checkpointer = MongoDBSaver(mongo_client, db_name="zero_touch_gst")
+    
+    # Compile the app with the checkpointer
+    gst_app = workflow.compile(checkpointer=checkpointer)
 
-    # Print the final results after the graph completes its run
+    # --- 5. DYNAMIC THREAD ID ---
+    # Generate a random UUID so every test run is treated as a brand new session
+    unique_run_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": unique_run_id}}
+    
+    print(f"📁 Starting fresh run with Thread ID: {unique_run_id}")
+
+    # Execute the Graph!
+    final_state = gst_app.invoke(initial_state, config=config)
+
     print("\n" + "="*50)
-    print("🏁 GRAPH EXECUTION COMPLETE")
+    print("🏁 GRAPH EXECUTION COMPLETE (STATE SAVED TO MONGODB ATLAS)")
     print("="*50)
     print(f"Total Mismatches Found: {len(final_state['mismatches'])}")
     for m in final_state['mismatches']:
