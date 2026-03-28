@@ -20,18 +20,29 @@ workflow.add_node("watcher", watcher_agent)
 workflow.add_node("reconciler", reconciliation_agent)
 workflow.add_node("vendor_chase", vendor_chase_agent)
 
-# 3. Define the Flow
+# 3. Define the Flow (Edges)
 workflow.set_entry_point("watcher")
 workflow.add_edge("watcher", "reconciler")
 workflow.add_edge("reconciler", "vendor_chase")
-workflow.add_edge("vendor_chase", END)
+workflow.add_edge("vendor_chase", END)  # <-- Graph finishes after vendor chase
+
+# --- 4. THE MONGODB CHECKPOINTER ---
+# Ensure MONGO_URI is in your .env file! (Defaults to localhost if missing)
+mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+mongo_client = MongoClient(mongo_uri)
+
+# This automatically creates a 'zero_touch_gst' database and manages state
+checkpointer = MongoDBSaver(mongo_client, db_name="zero_touch_gst")
+
+# Compile the app with the checkpointer
+gst_app = workflow.compile(checkpointer=checkpointer)
 
 # ---------------------------------------------------------
 # LOCAL TEST RUNNER
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    print("🚀 Initializing MongoDB Checkpointed LangGraph...\n")
-    
+    print("🚀 Initializing Checkpointed LangGraph Orchestrator...\n")
+
     initial_state = {
         "current_period": "2026-03",
         "days_to_cutoff": 250,
@@ -50,17 +61,6 @@ if __name__ == "__main__":
         "workflow_status": "started"
     }
 
-    # --- 4. THE MONGODB CHECKPOINTER ---
-    # Ensure MONGODB_URI is in your .env file from earlier!
-    mongo_uri = os.getenv("MONGO_URI")
-    mongo_client = MongoClient(mongo_uri)
-    
-    # This automatically creates a 'zero_touch_gst' database and manages state
-    checkpointer = MongoDBSaver(mongo_client, db_name="zero_touch_gst")
-    
-    # Compile the app with the checkpointer
-    gst_app = workflow.compile(checkpointer=checkpointer)
-
     # --- 5. DYNAMIC THREAD ID ---
     # Generate a random UUID so every test run is treated as a brand new session
     unique_run_id = str(uuid.uuid4())
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     final_state = gst_app.invoke(initial_state, config=config)
 
     print("\n" + "="*50)
-    print("🏁 GRAPH EXECUTION COMPLETE (STATE SAVED TO MONGODB ATLAS)")
+    print("🏁 GRAPH EXECUTION COMPLETE (STATE SAVED TO MONGODB)")
     print("="*50)
     print(f"Total Mismatches Found: {len(final_state['mismatches'])}")
     for m in final_state['mismatches']:
