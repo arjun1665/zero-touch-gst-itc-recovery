@@ -7,6 +7,7 @@ from twilio.rest import Client
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 from dotenv import load_dotenv
+from db_schema import log_audit
 
 load_dotenv()
 
@@ -88,17 +89,13 @@ def vendor_chase_agent(state: dict) -> dict:
     """)
 
     for mismatch in mismatches:
-        # FIX: Use .get() for dictionary access
         inv_num = mismatch.get("invoice_number")
         issue_text = mismatch.get("issue", "").lower()
 
-        # Lookup details from books_data (central ERP register)
         record = next((item for item in books_data if item.get("invoice_number") == inv_num), None)
-        
         if not record:
             continue
 
-        # Filter: Only chase specific vendor-side errors
         if "missing" in issue_text or "value mismatch" in issue_text:
             print(f"   📝 Generating recovery drafts for {inv_num}...")
             
@@ -113,23 +110,28 @@ def vendor_chase_agent(state: dict) -> dict:
                     "days_left": days_left
                 })
                 
-                # Parse JSON safely
                 clean_json = response.content.replace("```json", "").replace("```", "").strip()
                 drafts = json.loads(clean_json)
                 
-                # EXECUTION: Send to your demo numbers/emails
                 target_phone = os.getenv("MY_WHATSAPP_NUMBER")
                 target_email = os.getenv("SENDER_EMAIL") 
                 
                 send_whatsapp(drafts["whatsapp_body"], target_phone)
                 send_email(drafts["email_subject"], drafts["email_body"], target_email)
                 
+                # AUDIT LOGGING
+                log_audit("Vendor_Chase", "OUTREACH_EXECUTED", {
+                    "invoice_number": inv_num,
+                    "vendor": record.get("vendor_name"),
+                    "channels": ["WhatsApp", "Email"]
+                })
+
                 chase_logs.append({
                     "invoice": inv_num,
                     "status": "Omnichannel Chase Executed",
                     "vendor": record.get("vendor_name")
                 })
             except Exception as e:
-                print(f"   ❌ Outreach Failed for {inv_num}: {e}")
+                log_audit("Vendor_Chase", "OUTREACH_FAILED", {"invoice": inv_num, "error": str(e)})
 
     return {"vendor_chase_log": chase_logs}
