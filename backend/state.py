@@ -41,6 +41,9 @@ class GSTGraphState(TypedDict):
     vendor_chase_log: Annotated[List[Dict], operator.add]         
     itc_recommendations: Annotated[List[ITCRecommendation], operator.add]
     
+    # --- NEW: ERP Financial Horizon ---
+    financial_context: Dict  # <--- This is what the ERP Agent feeds to the Optimizer
+    
     # Final Outputs
     gstr3b_draft: Dict                           
     hitl_flag: bool                              

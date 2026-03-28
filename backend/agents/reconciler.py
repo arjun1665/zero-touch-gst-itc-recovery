@@ -1,94 +1,143 @@
-# backend/agents/reconciler.py
+import csv
 import requests
-from typing import Dict, Any
-from state import GSTGraphState, MismatchRecord
+import os
 
-# Our company's mock GSTIN
-OUR_COMPANY_GSTIN = "27AADCB2230M1Z2"
+# --- HELPER ---
 
-def watcher_agent(state: GSTGraphState) -> Dict[str, Any]:
+def safe_float(value, default=0.0) -> float:
     """
-    Agent 1: Connects to the GSTN Portal (our mock API) and pulls the static 2B data.
+    Safely converts a CSV cell to float.
+    Handles: empty strings, 'FALSE', 'TRUE', None, whitespace.
     """
-    print("\n[Watcher Agent] 👁️ Waking up. Polling GSTN Portal for GSTR-2B...")
-    
-    period = state.get("current_period", "2026-03")
-    url = f"http://127.0.0.1:8000/mock-gstn/gstr2b/{period}"
-    
+    if value is None:
+        return default
+    stripped = str(value).strip()
+    if stripped.upper() in ("", "FALSE", "TRUE", "N/A", "NONE"):
+        return default
     try:
-        response = requests.get(url)
+        return float(stripped)
+    except ValueError:
+        return default
+
+# --- CORE BUSINESS LOGIC ---
+
+def load_erp_purchases(filepath: str):
+    purchases = []
+    if not os.path.exists(filepath):
+        print(f"⚠️  Warning: CSV file not found at {filepath}")
+        return purchases
+
+    with open(filepath, mode='r', encoding='utf-8') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            if row["Transaction_Type"].strip().title() != "Purchase":
+                continue
+
+            # Guard: skip malformed rows where Invoice_Number is missing or blank
+            inv_num = row.get("Invoice_Number", "").strip()
+            if not inv_num:
+                print(f"⚠️  Skipping malformed row (missing Invoice_Number): {dict(row)}")
+                continue
+
+            igst = safe_float(row.get("IGST"))
+            cgst = safe_float(row.get("CGST"))
+            sgst = safe_float(row.get("SGST"))
+
+            # Inside load_erp_purchases loop:
+
+            purchases.append({
+                "invoice_number":  inv_num,
+                "vendor_name":     row.get("Party_Name", "Unknown"),
+                "tax_amount":      igst + cgst + sgst,
+                "goods_received":  (row.get("Goods_Received") or "").strip().upper() == "TRUE",
+                "itc_eligibility": (row.get("ITC_Eligibility") or "").strip(),
+                "is_rcm":          (row.get("Is_RCM") or "").strip().upper() == "TRUE",
+            })
+    return purchases
+
+
+def run_reconciliation(period: str, csv_filepath: str):
+    try:
+        response = requests.get(
+            f"http://localhost:8000/mock-gstn/gstr2b/{period}", timeout=10
+        )
         response.raise_for_status()
-        portal_data = response.json().get("data", [])
-        
-        print(f"[Watcher Agent] ✅ Successfully retrieved {len(portal_data)} records from GSTN.")
-        return {"gstr2b_static_data": portal_data}
-        
-    except requests.exceptions.RequestException as e:
-        print(f"[Watcher Agent] ❌ Failed to connect to GSTN API: {e}")
-        return {"gstr2b_static_data": []}
+        gstr2b_data = response.json().get("data", [])
+    except Exception as e:
+        print(f"❌ Error fetching GSTN data: {e}")
+        return []
 
+    gstr2b_lookup = {item["invoice_number"]: item for item in gstr2b_data}
+    internal_purchases = load_erp_purchases(csv_filepath)
 
-def reconciliation_agent(state: GSTGraphState) -> Dict[str, Any]:
-    """
-    Agent 2: Performs the 3-way mathematical match between Internal Books and GSTR-2B.
-    """
-    print("\n[Reconciliation Agent] 🧮 Starting 3-way match analysis...")
-    
-    books = state.get("books_data", [])
-    gstr2b = state.get("gstr2b_static_data", [])
-    days_to_cutoff = state.get("days_to_cutoff", 250)
-    
-    is_critical_timeline = days_to_cutoff < 30 
-    new_mismatches = []
-    
-    gstr2b_dict = {item["invoice_number"]: item for item in gstr2b}
-
-    # Check our books against the government portal
-    for book_invoice in books:
+    mismatches = []
+    for book_invoice in internal_purchases:
         inv_num = book_invoice["invoice_number"]
-        
-        # Scenario A: Missing Invoice
-        if inv_num not in gstr2b_dict:
-            print(f"   ⚠️ Mismatch Found: {inv_num} is missing from GSTR-2B.")
-            new_mismatches.append(
-                MismatchRecord(
-                    invoice_number=inv_num,
-                    vendor_gstin=book_invoice["vendor_gstin"],
-                    issue_type="vendor_not_filed",
-                    tax_value=book_invoice["tax_amount"],
-                    is_critical=is_critical_timeline
-                )
-            )
+
+        # FIX: use "goods_received" (lowercase) — matches what load_erp_purchases stores
+        if not book_invoice["goods_received"]:
+            mismatches.append({
+                "invoice_number": inv_num,
+                "issue": "Goods not received (Sec 16 Block)"
+            })
             continue
-            
-        portal_invoice = gstr2b_dict[inv_num]
-        
-        # Scenario B: GSTIN Typo
-        if portal_invoice.get("status") == "filed_wrong_gstin":
-            print(f"   ⚠️ Mismatch Found: {inv_num} has a GSTIN typo in the portal.")
-            new_mismatches.append(
-                MismatchRecord(
-                    invoice_number=inv_num,
-                    vendor_gstin=book_invoice["vendor_gstin"],
-                    issue_type="gstin_mismatch",
-                    tax_value=book_invoice["tax_amount"],
-                    is_critical=is_critical_timeline
-                )
-            )
 
-    # Look for Credit Notes
-    for portal_invoice in gstr2b:
-        if portal_invoice.get("type") == "credit_note":
-             print(f"   ℹ️ Credit Note Detected: {portal_invoice['invoice_number']}. Flagging for ITC reversal.")
-             new_mismatches.append(
-                MismatchRecord(
-                    invoice_number=portal_invoice["invoice_number"],
-                    vendor_gstin=portal_invoice["vendor_gstin"],
-                    issue_type="credit_note_pending",
-                    tax_value=portal_invoice["tax_amount"],
-                    is_critical=False 
-                )
-             )
+        if book_invoice["itc_eligibility"] == "Blocked_Sec17_5":
+            mismatches.append({
+                "invoice_number": inv_num,
+                "issue": "Blocked under Section 17(5)"
+            })
+            continue
 
-    print(f"[Reconciliation Agent] ✅ Analysis complete. Identified actionable mismatches.")
-    return {"mismatches": new_mismatches}
+        if book_invoice["is_rcm"]:
+            # RCM handled separately — output tax liability, not vendor match
+            continue
+
+        if inv_num not in gstr2b_lookup:
+            mismatches.append({
+                "invoice_number": inv_num,
+                "issue": "Missing from GSTR-2B (Vendor failed to file)"
+            })
+            continue
+
+        gstn_record = gstr2b_lookup[inv_num]
+        gstn_igst   = safe_float(gstn_record.get("igst"))
+        gstn_cgst   = safe_float(gstn_record.get("cgst"))
+        gstn_sgst   = safe_float(gstn_record.get("sgst"))
+        gstn_total  = gstn_igst + gstn_cgst + gstn_sgst
+
+        difference = abs(book_invoice["tax_amount"] - gstn_total)
+        if difference > 5.0:
+            mismatches.append({
+                "invoice_number": inv_num,
+                "issue": (
+                    f"Value Mismatch of ₹{difference:.2f} "
+                    f"(Books: ₹{book_invoice['tax_amount']:.2f} "
+                    f"vs GSTN: ₹{gstn_total:.2f})"
+                )
+            })
+
+    return mismatches
+
+
+# --- LANGGRAPH AGENT NODES ---
+
+def watcher_agent(state):
+    print("\n[Watcher Agent] Checking GSTN Portal for new GSTR-2B data...")
+    period = state.get("current_period", "2026-03")
+    return {"current_period": period}
+
+
+def reconciliation_agent(state):
+    print("\n[Reconciliation Agent] Comparing ERP Purchases against Government GSTR-2B...")
+    period   = state.get("current_period", "2026-03")
+    csv_path = os.path.join("erp_register.csv")
+    found_mismatches = run_reconciliation(period, csv_path)
+    print(f"   => Found {len(found_mismatches)} mismatches/issues requiring attention.")
+
+    books_data = load_erp_purchases(csv_path)
+
+    return {
+        "mismatches":  found_mismatches,
+        "books_data":  books_data,
+    }
