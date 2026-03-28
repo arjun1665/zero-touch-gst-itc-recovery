@@ -8,6 +8,8 @@ from langgraph.graph import StateGraph, END
 from state import GSTGraphState
 from agents.reconciler import watcher_agent, reconciliation_agent
 from agents.vendor_chase import vendor_chase_agent
+from agents.optimizer_agent import optimizer_agent
+from agents.erp_agent import erp_agent
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,12 +21,16 @@ workflow = StateGraph(GSTGraphState)
 workflow.add_node("watcher", watcher_agent)
 workflow.add_node("reconciler", reconciliation_agent)
 workflow.add_node("vendor_chase", vendor_chase_agent)
+workflow.add_node("erp", erp_agent)             # <-- NEW NODE
+workflow.add_node("optimizer", optimizer_agent)
 
 # 3. Define the Flow (Edges)
 workflow.set_entry_point("watcher")
 workflow.add_edge("watcher", "reconciler")
 workflow.add_edge("reconciler", "vendor_chase")
-workflow.add_edge("vendor_chase", END)  # <-- Graph finishes after vendor chase
+workflow.add_edge("vendor_chase", "erp")
+workflow.add_edge("erp", "optimizer")           # <-- ERP Engine goes to Optimizer
+workflow.add_edge("optimizer", END)
 
 # --- 4. THE MONGODB CHECKPOINTER ---
 # Ensure MONGO_URI is in your .env file! (Defaults to localhost if missing)
@@ -74,6 +80,32 @@ if __name__ == "__main__":
     print("\n" + "="*50)
     print("🏁 GRAPH EXECUTION COMPLETE (STATE SAVED TO MONGODB)")
     print("="*50)
-    print(f"Total Mismatches Found: {len(final_state['mismatches'])}")
-    for m in final_state['mismatches']:
-        print(f" - {m.invoice_number} | Issue: {m.issue_type}")
+
+    if final_state.get("hitl_flag"):
+        print("\n⚠️ WORKFLOW PAUSED: AWAITING HUMAN IN THE LOOP APPROVAL")
+        print("\n📄 --- QUANTITATIVE AI OPTIMIZER REPORT ---")
+        
+        draft = final_state.get("gstr3b_draft", {})
+        
+        print(f"\n📊 Executive Brief:\n{draft.get('executive_brief', 'No brief generated.')}")
+        
+        print("\n🔍 Mismatch Variance Analysis:")
+        mismatch_analysis = draft.get("mismatch_analysis") or []
+        for rec in mismatch_analysis:
+            print(f" 🔹 {rec.get('invoice_number', 'Unknown')}")
+            print(f"    Variance: {rec.get('variance_calculation', 'N/A')}")
+            print(f"    Action:   {rec.get('action_required', 'N/A')}\n")
+
+        print("\n✅ RECOMMENDED TO CLAIM:")
+        claimable = draft.get("recommended_to_claim") or []
+        if not claimable:
+            print(" - None recommended.")
+        for item in claimable:
+            print(f" - [{item.get('invoice_number', 'Unknown')} | ₹{item.get('itc_value', '0')}] : {item.get('financial_justification', 'No justification.')}")
+
+        print("\n❌ RECOMMENDED TO DEFER / REVERSE:")
+        unclaimable = draft.get("recommended_to_defer") or []
+        if not unclaimable:
+            print(" - None recommended.")
+        for item in unclaimable:
+            print(f" - [{item.get('invoice_number', 'Unknown')} | ₹{item.get('itc_value', '0')}] : {item.get('risk_assessment', 'No risk assessment.')}")
