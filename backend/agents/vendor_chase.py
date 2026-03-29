@@ -59,6 +59,49 @@ def send_email(subject: str, body: str, to_email: str):
         print(f"   ❌ SMTP Error: {e}")
         return False
 
+
+def send_email_with_attachment(subject: str, body: str, to_email: str, attachment_path: str, attachment_filename: str = "attachment.pdf"):
+    """Fires a physical Email with a file attachment via SMTP."""
+    from email.mime.base import MIMEBase
+    from email import encoders
+    
+    sender_email = os.getenv("SENDER_EMAIL")
+    password = os.getenv("SENDER_APP_PASSWORD")
+    
+    if not all([sender_email, password]):
+        print("   ❌ SMTP credentials missing in .env")
+        return False
+
+    msg = MIMEMultipart()
+    msg['From'] = f"Vishal Rajaraman <{sender_email}>"
+    msg['To'] = to_email
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+    
+    # Attach the file
+    try:
+        with open(attachment_path, 'rb') as f:
+            part = MIMEBase('application', 'octet-stream')
+            part.set_payload(f.read())
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename="{attachment_filename}"')
+        msg.attach(part)
+    except Exception as e:
+        print(f"   ❌ Attachment Error: {e}")
+        return False
+    
+    try:
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender_email, password)
+        server.send_message(msg)
+        server.quit()
+        print(f"   ✅ Email with attachment sent to {to_email}")
+        return True
+    except Exception as e:
+        print(f"   ❌ SMTP Error: {e}")
+        return False
+
 # --- AGENT LOGIC ---
 
 def vendor_chase_agent(state: dict) -> dict:
