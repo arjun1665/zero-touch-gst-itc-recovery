@@ -46,5 +46,6 @@ class GSTGraphState(TypedDict):
     
     # Final Outputs
     gstr3b_draft: Dict                           
+    final_gstr3b: Dict
     hitl_flag: bool                              
     workflow_status: str

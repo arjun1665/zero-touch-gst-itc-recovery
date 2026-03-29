@@ -7,12 +7,15 @@ from dotenv import load_dotenv
 # 1. Load your .env variables
 load_dotenv()
 
-# 2. Setup MongoDB Connection
-mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+# 2. UNIFIED DB CONNECTION: Check for both common names, NO localhost fallback
+mongo_uri = os.getenv("MONGODB_URI") or os.getenv("MONGO_URI")
+if not mongo_uri:
+    raise ValueError("❌ MONGODB_URI missing from .env file! Please check your Atlas connection string.")
+
 client = MongoClient(mongo_uri)
 db = client["zero_touch_gst"]
 
-# 3. Define Collections (These were causing your NameError)
+# 3. Define Collections
 audit_collection = db["audit_logs"]
 erp_collection = db["erp_inventory"]
 gstr3b_collection = db["gstr3b_records"]
@@ -20,7 +23,7 @@ gstr3b_collection = db["gstr3b_records"]
 # --- HELPER FUNCTIONS ---
 
 def log_audit(agent_name, action, details):
-    """Stores a permanent audit trail for the hackathon demo."""
+    """Stores a permanent audit trail for the system."""
     audit_entry = {
         "timestamp": datetime.now(),
         "agent": agent_name,
@@ -38,6 +41,15 @@ def safe_float(value, default=0.0):
         return float(stripped)
     except ValueError:
         return default
+
+def get_raw_erp_inventory():
+    """Fetches all raw records from the erp_inventory collection."""
+    try:
+        # Since 'db' is already authenticated above, we just query it directly
+        return list(db["erp_inventory"].find({}, {"_id": 0}))
+    except Exception as e:
+        print(f"❌ MongoDB Connection Error: {e}")
+        return []
 
 # --- MAIN MIGRATION FUNCTION ---
 
@@ -64,19 +76,3 @@ def sync_csv_to_mongo(filepath="erp_register.csv"):
         erp_collection.insert_many(records)
         log_audit("Database_Manager", "ERP_Sync", f"Injected {len(records)} records.")
         print(f"✅ Successfully migrated {len(records)} records to MongoDB.")
-load_dotenv()
-def get_raw_erp_inventory():
-    uri = os.getenv("MONGO_URI")
-    if not uri:
-        raise ValueError("❌ MONGODB_URI not found in environment variables!")
-
-    # Connect to Atlas
-    client = MongoClient(uri)
-    db = client["zero_touch_gst"]
-
-    try:
-        # The .list_collection_names() trigger ensures the connection works
-        return list(db["erp_inventory"].find({}, {"_id": 0}))
-    except Exception as e:
-        print(f"❌ MongoDB Connection Error: {e}")
-        return []

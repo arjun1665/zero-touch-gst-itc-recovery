@@ -9,7 +9,7 @@ from agents.reconciler import watcher_agent, reconciliation_agent
 from agents.vendor_chase import vendor_chase_agent
 from agents.optimizer_agent import optimizer_agent
 from agents.erp_agent import erp_agent
-from agents.filling_agent import filing_agent  # <-- NEW IMPORT
+from agents.filling_agent import filing_agent
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,7 +23,7 @@ workflow.add_node("reconciler", reconciliation_agent)
 workflow.add_node("vendor_chase", vendor_chase_agent)
 workflow.add_node("erp", erp_agent)
 workflow.add_node("optimizer", optimizer_agent)
-workflow.add_node("filing", filing_agent)  # <-- NEW NODE ADDED
+workflow.add_node("filing", filing_agent) 
 
 # 3. Define the Flow (Edges)
 workflow.set_entry_point("watcher")
@@ -31,11 +31,14 @@ workflow.add_edge("watcher", "reconciler")
 workflow.add_edge("reconciler", "vendor_chase")
 workflow.add_edge("vendor_chase", "erp")
 workflow.add_edge("erp", "optimizer")
-workflow.add_edge("optimizer", "filing")   # <-- OPTIMIZER FLOWS TO FILING
-workflow.add_edge("filing", END)           # <-- FILING IS THE FINAL STEP
+workflow.add_edge("optimizer", "filing")   
+workflow.add_edge("filing", END)           
 
 # --- 4. THE MONGODB CHECKPOINTER ---
-mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+mongo_uri = os.getenv("MONGODB_URI") or os.getenv("MONGO_URI")
+if not mongo_uri:
+    raise ValueError("❌ MONGODB_URI missing from .env file! Please check your Atlas connection string.")
+
 mongo_client = MongoClient(mongo_uri)
 checkpointer = MongoDBSaver(mongo_client, db_name="zero_touch_gst")
 
